@@ -1,6 +1,18 @@
 # Local Harness for macOS
 
-An independent, source-only edition of DeepSeek Harness Desktop for Apple Silicon. It is intended for teams that need to review where prompts, tool results and files can go before using a desktop coding assistant with sensitive material. In the supplied configuration, the desktop connects to its own local Host, and the Host sends inference requests to oMLX on the same Mac. A cloud account is unnecessary.
+An independent, source-based edition of DeepSeek Harness Desktop for Apple Silicon. It is intended for teams that need to review where prompts, tool results and files can go before using a desktop coding assistant with sensitive material. In the supplied configuration, the desktop connects to its own local Host, and the Host sends inference requests to oMLX on the same Mac. A cloud account is unnecessary.
+
+## Install on an Apple Silicon Mac
+
+[中文一键安装指南](README.zh-CN.md)
+
+Paste this line into Terminal while logged in to your Mac.
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/CarverXx/harness-local-macos/v1.0.0/install.sh | /bin/bash
+```
+
+Supports native Apple Silicon on macOS 15, 26 and 27. Allow 35 GB of free disk space for setup and ~16 GB of model downloads. We recommend at least 32 GB of unified memory. The on-disk inference cache can grow to 24 GB during use. The installer verifies a pinned first-party desktop runtime and applies a release patch locally, provisions oMLX and the model under your user account, registers a login service, then verifies the app and the loopback model endpoint. Open **Local Harness** in your home Applications folder when Terminal prints **Ready**. Rerun the same command after a network interruption. Port 8000 must be available. No Homebrew, Xcode, Node.js, or cloud credentials are needed. The Chinese guide selects the public ModelScope mirror and checks the same model hashes.
 
 ## Which data paths change?
 
@@ -16,7 +28,7 @@ An independent, source-only edition of DeepSeek Harness Desktop for Apple Silico
 
 **Scope for regulated deployments.** These controls cover specific application paths and processes. Native desktop components, Chromium network probes, same-user files, IPC, third-party helpers and OS services have separate trust boundaries. Local conversations, logs, model caches and files can persist on disk. A synced workspace or a privileged plugin can change the data flow. Validate those conditions on the systems where you intend to use it. [Security model and verification](SECURITY.md) · [Operator responsibilities and limitations](OPERATOR-NOTICE.md)
 
-## Build and run
+## Manual build and setup
 
 The reference combination is **macOS on Apple Silicon**, DeepSeek Harness Desktop **0.2.2-rc.5**, **oMLX 0.8.0**, and **Qwen3.8-27B MLX 4-bit**. Port 8000 must be available on loopback. Build and model acquisition require access to public dependencies or an internal mirror. Inference uses local files.
 

@@ -18,3 +18,9 @@
 !/macos/verify.py
 !/macos/host.sb
 !/macos/omlx-server.sb
+!/install.sh
+!/README.zh-CN.md
+!/macos/model-files.txt
+!/macos/download.py
+!/macos/service.py
+!/build/release-kit.sh

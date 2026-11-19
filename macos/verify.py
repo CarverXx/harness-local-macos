@@ -54,7 +54,21 @@ def main():
     for network_policy in (policy, server_policy):
         subprocess.run(["/usr/bin/sandbox-exec", "-f", network_policy, sys.executable,
                         __file__, "--child"], check=True)
-    print("Local application signature, resource integrity and update configuration verified")
+    key = (server_policy.parent / "inference.key").read_text().strip()
+    request = urllib.request.Request(
+        "http://127.0.0.1:8000/v1/chat/completions",
+        data=json.dumps({"model": "qwen/qwen3.8-27b", "messages": [
+            {"role": "user", "content": "Write the number 7."}
+        ], "temperature": 0, "max_tokens": 16}).encode(),
+        headers={"Authorization": "Bearer " + key, "Content-Type": "application/json"},
+    )
+    client = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    print("Testing the first local generation (the model may take a moment to load).", flush=True)
+    with client.open(request, timeout=240) as response:
+        result = json.load(response)
+    if not result.get("choices") or result.get("usage", {}).get("completion_tokens", 0) < 1:
+        raise RuntimeError("Local inference returned no generated tokens")
+    print("Local model generation, desktop signature and network policies verified.")
 
 
 if __name__ == "__main__":

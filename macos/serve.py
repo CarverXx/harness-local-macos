@@ -11,7 +11,8 @@ PROFILE = Path.home() / "Library/Application Support/Local Harness"
 INFERENCE = PROFILE / "Inference"
 MODEL = "Qwen3.8-27B-4bit"
 POLICY = Path(__file__).with_name("omlx-server.sb")
-RESOURCES = Path("/Applications/oMLX.app/Contents/Resources")
+BUNDLED = PROFILE / "Runtime/oMLX.app"
+RESOURCES = (BUNDLED if BUNDLED.is_dir() else Path("/Applications/oMLX.app")) / "Contents/Resources"
 PYTHON_HOME = RESOURCES / "Python/cpython-3.11"
 
 

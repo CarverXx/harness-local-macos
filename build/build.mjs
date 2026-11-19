@@ -7,6 +7,7 @@ import { createHash } from 'node:crypto'
 import {
   existsSync,
   readFileSync,
+  realpathSync,
   cpSync,
   mkdirSync,
   rmSync,
@@ -23,7 +24,7 @@ import assert from 'node:assert/strict'
 const project = fileURLToPath(new URL('../', import.meta.url))
 const [sourceDir, target, runtime] = process.argv.slice(2)
 if (!sourceDir || !runtime) throw Error('Run build/build.sh with the upstream checkout, output path and signed runtime')
-const root = resolve(sourceDir)
+const root = realpathSync(resolve(sourceDir))
 const upstream = process.env.LOCAL_HARNESS_UPSTREAM
 const base = '9c2670d3bce5275e0d1610272958121af87787bb'
 if (!upstream) throw Error('Missing pinned upstream checkout')
@@ -53,7 +54,13 @@ function replace(path, bytes) {
 }
 const dependencyIndex = raw.header.files.node_modules.files
 const runtimePackages = raw.header.files.dsh.files.node_modules.files
+// Keep generated module labels relative to the exported public source tree.
+const mimeRoot = join(project, "build/node_modules/mime")
+const mimeCopy = join(root, "build-deps/mime")
+cpSync(mimeRoot, mimeCopy, { recursive: true })
+const mimeEntry = relative(mimeRoot, fileURLToPath(import.meta.resolve("mime")))
 const output = await build({
+  absWorkingDir: root,
   entryPoints: [join(root, 'apps/desktop/src/main.ts')],
   bundle: true,
   write: false,
@@ -75,7 +82,7 @@ const output = await build({
           const existsIn = (tree) =>
             pkg.length === 1 ? tree[pkg[0]] : tree[pkg[0]]?.files?.[pkg[1]]
           if (path === 'mime')
-            return { path: fileURLToPath(import.meta.resolve('mime')) }
+            return { path: join(mimeCopy, mimeEntry) }
           if (path === '@deepseek-ai/dsh-util-file-drag')
             return { path: join(root, 'packages/util/file-drag/src/index.ts') }
           if (existsIn(dependencyIndex)) return { path, external: true }
