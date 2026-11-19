@@ -1,0 +1,20 @@
+# A public source release has a narrow allowlist. Local runtime and build data stay outside Git.
+*
+!/.gitignore
+!/LICENSE
+!/README.md
+!/SECURITY.md
+!/NOTICES.md
+!/OPERATOR-NOTICE.md
+!/patches/
+!/patches/local-desktop.patch
+!/build/
+!/build/build.sh
+!/build/build.mjs
+!/build/package.json
+!/build/package-lock.json
+!/macos/
+!/macos/serve.py
+!/macos/verify.py
+!/macos/host.sb
+!/macos/omlx-server.sb

@@ -1,0 +1,10 @@
+(version 1)
+(allow default)
+; Model requests are the only outbound IP connections allowed from the Host and its children.
+(deny network-outbound (remote ip "*:*"))
+(allow network-outbound (remote tcp "localhost:8000"))
+(deny network-bind (local ip "*:*"))
+(allow network-bind (local ip "localhost:*"))
+(deny appleevent-send)
+(deny process-exec (literal "/usr/bin/open") (literal "/usr/bin/osascript"))
+(deny mach-lookup (global-name "com.apple.lsd.open") (global-name "com.apple.coreservices.launchservicesd") (global-name "com.apple.mDNSResponder"))

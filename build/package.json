@@ -1,0 +1,13 @@
+{
+  "name": "local-harness-build",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node build.mjs"
+  },
+  "devDependencies": {
+    "@electron/asar": "4.3.2",
+    "esbuild": "0.27.7",
+    "mime": "4.1.1"
+  }
+}

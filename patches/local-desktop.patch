@@ -1,0 +1,529 @@
+diff --git a/apps/desktop/src/browser-guests.ts b/apps/desktop/src/browser-guests.ts
+index c3f0b10e..61ae1d03 100644
+--- a/apps/desktop/src/browser-guests.ts
++++ b/apps/desktop/src/browser-guests.ts
+@@ -1,4 +1,5 @@
+ /** Main-process ownership and fixed isolation policy for Sidebar webview guests. */
++import { isLocalHostUrl } from './local-privacy.ts'
+ import { randomUUID } from 'node:crypto'
+ import { app, session, type BrowserWindow, type Session, type WebContents } from 'electron'
+ import type { DesktopBrowserLeaseId, DesktopBrowserOpenRequest, DesktopBrowserReservation } from '@deepseek-ai/dsh-client-ui-sidebar-browser/types'
+@@ -148,7 +149,7 @@ export class DesktopBrowserGuests {
+       const url = new URL(details.url)
+       const network = ['http:', 'https:', 'ws:', 'wss:'].includes(url.protocol)
+       callback({ cancel: network
+-        ? url.username !== '' || url.password !== '' || this.isApplicationHost(url)
++        ? !isLocalHostUrl(url) || this.isApplicationHost(url)
+         : !['about:', 'data:', 'blob:'].includes(url.protocol) })
+     })
+   }
+@@ -156,7 +157,7 @@ export class DesktopBrowserGuests {
+   private allowedNavigation(value: string): boolean {
+     if (!URL.canParse(value)) return false
+     const url = new URL(value)
+-    return ['http:', 'https:'].includes(url.protocol) && url.username === '' && url.password === ''
++    return isLocalHostUrl(url)
+       && !this.isApplicationHost(url)
+   }
+ 
+diff --git a/apps/desktop/src/file-actions.ts b/apps/desktop/src/file-actions.ts
+index 45c4a25f..a4b89a92 100644
+--- a/apps/desktop/src/file-actions.ts
++++ b/apps/desktop/src/file-actions.ts
+@@ -1,4 +1,5 @@
+ /** Trusted-window Chromium downloads and clipboard fallback reads. */
++import { isLoopbackUrl } from './local-privacy.ts'
+ import { app, ipcMain, session } from 'electron'
+ import type { BrowserWindow, IpcMainInvokeEvent } from 'electron'
+ import { closeSync, openSync, rmSync } from 'node:fs'
+@@ -140,7 +141,7 @@ export function installFileActions(
+       const url = new URL(value)
+       const host = hostUrl()
+       const application = host === undefined ? undefined : new URL(host)
+-      if (!['https:', 'http:'].includes(url.protocol) || url.username || url.password
++      if (!isLoopbackUrl(url) || url.port !== '8000' || url.username || url.password
+         || application !== undefined && url.port === application.port
+         && (url.hostname === application.hostname || ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname))) {
+         throw new Error('Invalid image URL')
+diff --git a/apps/desktop/src/host-process.ts b/apps/desktop/src/host-process.ts
+index 8e26fb8d..c551a064 100644
+--- a/apps/desktop/src/host-process.ts
++++ b/apps/desktop/src/host-process.ts
+@@ -208,7 +208,8 @@ export class DesktopHostProcess {
+   async start(): Promise<DesktopHostReady> {
+     if (this.child !== undefined) return this.readyPromise
+     const entry = join(this.runtimeDir, 'node_modules', '@deepseek-ai', 'dsh-desktop-host', 'lib', 'index.js')
+-    const child = spawn(this.node, [
++    const child = spawn('/usr/bin/sandbox-exec', [
++      '-f', join(process.resourcesPath, 'local-host.sb'), this.node,
+       '--expose-internals',
+       ...(this.inspectPort === undefined ? [] : [`--inspect=127.0.0.1:${String(this.inspectPort)}`]),
+       entry,
+diff --git a/apps/desktop/src/local-privacy.ts b/apps/desktop/src/local-privacy.ts
+new file mode 100644
+index 00000000..cacb72ec
+--- /dev/null
++++ b/apps/desktop/src/local-privacy.ts
+@@ -0,0 +1,67 @@
++/** Network and storage boundaries for the macOS local-model edition. */
++import { app } from 'electron'
++import { join } from 'node:path'
++import { existsSync, mkdirSync, readFileSync } from 'node:fs'
++import { homedir } from 'node:os'
++
++export function isLoopbackUrl(value: string | URL): boolean {
++  try {
++    const url = new URL(value)
++    return ['http:', 'https:', 'ws:', 'wss:'].includes(url.protocol)
++      && ['127.0.0.1', '[::1]', 'localhost'].includes(url.hostname)
++      && !url.username && !url.password
++  } catch { return false }
++}
++
++let hostPort: string | undefined
++
++/** Only the authenticated desktop Host may carry renderer traffic, including its multiplexed WebSocket. */
++export function setLocalHost(value: string): void {
++  const url = new URL(value)
++  if (!isLoopbackUrl(url) || url.protocol !== 'http:' || !url.port) throw Error('Expected a loopback desktop Host')
++  hostPort = url.port
++}
++
++export function isLocalHostUrl(value: URL): boolean {
++  return hostPort !== undefined && isLoopbackUrl(value) && value.port === hostPort
++}
++
++export function configureLocalDesktop(): void {
++  const root = join(homedir(), 'Library', 'Application Support', 'Local Harness')
++  for (const name of ['Electron', 'Harness', 'Agents', 'Workspaces']) mkdirSync(join(root, name), { recursive: true, mode: 0o700 })
++  app.setPath('userData', join(root, 'Electron'))
++  process.env.DSH_HOME = join(root, 'Harness')
++  process.env.DSH_AGENTS_HOME = join(root, 'Agents')
++  process.env.DSH_TELEMETRY_DISABLED = '1'
++  process.env.DSH_TELEMETRY_MODE = 'DISABLED'
++  const inferenceKey = join(root, 'Inference', 'inference.key')
++  process.env.DSH_LOCAL_MODEL_KEY = existsSync(inferenceKey) ? readFileSync(inferenceKey, 'utf8').trim() : ''
++  process.env.DSH_LOCAL_WORKSPACES = join(root, 'Workspaces')
++  // The proxy has no listener. Only loopback may bypass it, including IP literals.
++  app.commandLine.appendSwitch('proxy-server', 'http://127.0.0.1:0')
++  app.commandLine.appendSwitch('proxy-bypass-list', 'localhost;127.0.0.1;[::1]')
++  app.commandLine.appendSwitch('host-resolver-rules', 'MAP * ~NOTFOUND, EXCLUDE localhost, EXCLUDE 127.0.0.1, EXCLUDE [::1]')
++  app.commandLine.appendSwitch('disable-background-networking')
++  app.commandLine.appendSwitch('force-webrtc-ip-handling-policy', 'disable_non_proxied_udp')
++  app.on('session-created', (session) => {
++    session.webRequest.onBeforeRequest((details, reply) => {
++      const url = new URL(details.url)
++      const network = ['http:', 'https:', 'ws:', 'wss:', 'ftp:'].includes(url.protocol)
++      reply({ cancel: network && !isLocalHostUrl(url) })
++    })
++  })
++}
++
++/** Keep shell credentials and proxy settings outside the default Host environment. */
++export function localHostEnvironment(): NodeJS.ProcessEnv {
++  const names = [
++    'HOME', 'USER', 'LOGNAME', 'SHELL', 'PATH', 'TMPDIR', 'LANG', 'LC_ALL', 'LC_CTYPE', 'TZ',
++    'DSH_HOME', 'DSH_AGENTS_HOME', 'DSH_TELEMETRY_DISABLED', 'DSH_TELEMETRY_MODE',
++    'DSH_LOCAL_MODEL_KEY', 'DSH_LOCAL_WORKSPACES',
++  ]
++  const environment: NodeJS.ProcessEnv = {}
++  for (const name of names) {
++    if (process.env[name] !== undefined) environment[name] = process.env[name]
++  }
++  return environment
++}
+diff --git a/apps/desktop/src/main.ts b/apps/desktop/src/main.ts
+index 8f9cd823..14620bc5 100644
+--- a/apps/desktop/src/main.ts
++++ b/apps/desktop/src/main.ts
+@@ -1,5 +1,6 @@
+ /** Electron shell: desktop project ownership, custom protocol, windows, and lifecycle. */
+ 
++import { configureLocalDesktop, localHostEnvironment, setLocalHost } from './local-privacy.ts'
+ import { installFileActions } from './file-actions.ts'
+ import { configurationFailure, channelSaveFailure, configurationMessage } from './update-configuration.ts'
+ import type { DesktopChannelState, DesktopChannelChangeResult } from '@deepseek-ai/dsh-client-ui-settings-general/types'
+@@ -56,7 +57,6 @@ import { DesktopUpdatePreparationError } from './update-error.ts'
+ import { DesktopUpdateSchedule, resolveDesktopUpdateScheduleConfig } from './update-schedule.ts'
+ import { desktopUpdateErrorSummary, presentDesktopUpdate } from './update-presentation.ts'
+ import { desktopErrorState } from './startup-error.ts'
+-import { readDesktopLoginShellEnvironment, resolveDesktopLoginShellConfig } from './login-shell-environment.ts'
+ import { DesktopMandatoryUpdatePolicy, resolveDesktopPolicyConfig, type DesktopPolicyState } from './mandatory-update-policy.ts'
+ import { desktopClientMetadata, desktopClientVersion } from './client-metadata.ts'
+ import { DesktopMandatoryUpdateWindow } from './mandatory-update-window.ts'
+@@ -72,6 +72,8 @@ import { DesktopQuitConfirmation } from './quit-confirmation.ts'
+ import { DesktopTray } from './tray.ts'
+ import { DesktopBackgroundNotice } from './background-notice.ts'
+ 
++configureLocalDesktop()
++
+ let focusPrimaryWindow = (): void => {}
+ let stopForRecovery = async (): Promise<void> => { await stopOperationReports() }
+ let shuttingDown = false
+@@ -92,7 +94,7 @@ const rendererConsole = new RendererConsoleTail()
+ 
+ // Platform-conventional logs directory (macOS ~/Library/Logs/<name>, otherwise under userData);
+ // set before ready so the first fatal report already resolves under it.
+-app.setAppLogsPath()
++app.setAppLogsPath(join(app.getPath('userData'), 'logs'))
+ 
+ function currentDesktopLocale(): ReturnType<typeof resolveDesktopLocale> {
+   return resolveDesktopLocale(windowsLanguage ?? app.getLocale())
+@@ -295,10 +297,9 @@ function createWindow(preload: string, show = false, primary = false): BrowserWi
+       devTools: true,
+     },
+   })
+-  window.webContents.setWindowOpenHandler(({ url }) => {
+-    if (['http:', 'https:'].includes(new URL(url).protocol)) void shell.openExternal(url)
+-    return { action: 'deny' }
+-  })
++  window.setTitle('Local Harness')
++  window.on('page-title-updated', (event) => { event.preventDefault() })
++  window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
+   if (process.platform === 'darwin' || process.platform === 'win32') {
+     // Fullscreen hides native window controls; overlays drop their caption clearance.
+     const sendFullscreen = (): void => {
+@@ -372,7 +373,7 @@ function createWindow(preload: string, show = false, primary = false): BrowserWi
+     if (destination.protocol !== `${SCHEME}:`
+       && !(destination.protocol === 'http:' && destination.origin === current.origin)) {
+       event.preventDefault()
+-      if (['http:', 'https:'].includes(destination.protocol)) void shell.openExternal(url)
++      // Do not delegate remote navigation to an unrestricted system browser.
+     }
+   })
+   return window
+@@ -391,18 +392,8 @@ async function main(): Promise<void> {
+     : join(process.resourcesPath, 'runtime', 'primary-runtime')
+   const activeProject = paths.profile
+   const manager = new DesktopProjectManager(paths, resources)
+-  // Dock and Finder launches inherit only launchd's environment; every Host shares one login-shell read.
+-  const loginShellRead = new AbortController()
+-  // The probe runs in its own process group, which outlives Desktop unless the read is aborted.
+-  app.on('will-quit', () => { loginShellRead.abort() })
+-  const loginShell = readDesktopLoginShellEnvironment(process.env, resolveDesktopLoginShellConfig(process.env), {
+-    signal: loginShellRead.signal,
+-  }).then((result) => {
+-    for (const failure of result.failures) console.warn(`desktop login shell: ${failure.shell} failed (${failure.reason})`)
+-    return result.environment
+-  })
+-  let hostEnvironment: NodeJS.ProcessEnv = process.env
+-  const prepareHostEnvironment = async (): Promise<void> => { hostEnvironment = await loginShell }
++  // A login shell can source cloud credentials or run network hooks. Use the desktop environment directly.
++  const hostEnvironment = localHostEnvironment()
+   let quitting = false
+   let startup: Promise<void> | undefined
+   let workspaceRecovery: Promise<void> | undefined
+@@ -501,7 +492,6 @@ async function main(): Promise<void> {
+     } catch (_error) { /* Analytics cannot interrupt native actions. */ }
+   }
+   let stopAccount: (() => void) | undefined
+-  let openedAttempt: string | undefined
+   let returnedAttempt: string | undefined
+   let pendingWelcomeNotice: WelcomeNotice | undefined
+   let previousAccountStatus: string | undefined
+@@ -545,6 +535,7 @@ async function main(): Promise<void> {
+     return {
+       start: async () => {
+         const ready = await host.start()
++        setLocalHost(ready.url)
+         const cookie = await authenticateWebHost(ready.url)
+         hostCookie = cookie
+         hostUrl = ready.url
+@@ -561,10 +552,6 @@ async function main(): Promise<void> {
+           if (quitting) return
+           if (welcomeWindow !== undefined && !welcomeWindow.isDestroyed()) welcomeWindow.webContents.send(WELCOME_IPC.state, state)
+           const attempt = state.attempt
+-          if (attempt?.phase === 'waiting-browser' && attempt.authorizeUrl !== undefined && openedAttempt !== attempt.id) {
+-            openedAttempt = attempt.id
+-            void shell.openExternal(platformLoginUrl(attempt.authorizeUrl)).catch(() => undefined)
+-          }
+           if ((attempt?.phase === 'failed' || attempt?.phase === 'expired') && returnedAttempt !== attempt.id) {
+             returnedAttempt = attempt.id
+             focusPrimaryWindow()
+@@ -647,7 +634,7 @@ async function main(): Promise<void> {
+       updateStoppedHost = false
+       if (restoreHost) {
+         // Only confirmed process exit permits replacement before another installation confirmation.
+-        const hostReady = backend.start(prepareHostEnvironment)
++        const hostReady = backend.start(() => Promise.resolve())
+         startup = hostReady
+         const recovery = hostReady.then(async () => {
+           if (quitting) return
+@@ -681,7 +668,7 @@ async function main(): Promise<void> {
+     startup ??= (async () => {
+       await navigateMain(applicationUrl)
+       await backend.start(async () => {
+-        await Promise.all([manager.applyRelease(), prepareHostEnvironment()])
++        await manager.applyRelease()
+       })
+       if (backend.host !== undefined) await openInitialWindow()
+       if (backend.host !== undefined) updateJournal?.action('workspace-ready')
+@@ -1144,14 +1131,8 @@ async function main(): Promise<void> {
+     return policy
+   }
+ 
+-  const automaticCheck = (): void => {
+-    if (!quitting) void mandatoryPolicy?.check('foreground-or-resume').catch((error: unknown) => { console.error(error) })
+-    if (!quitting) void updateSchedule.check().catch((error: unknown) => { console.error(error) })
+-  }
+-  powerMonitor.on('resume', automaticCheck)
+   app.on('will-quit', () => {
+     updateSchedule.dispose()
+-    powerMonitor.off('resume', automaticCheck)
+     updates.dispose()
+   })
+ 
+@@ -1324,7 +1305,6 @@ async function main(): Promise<void> {
+     mainWindow = window
+     browserGuests.bind(window, (guest, name) => shortcuts.attachGuest(window, guest, name))
+     shortcuts.attach(window)
+-    window.on('focus', automaticCheck)
+     // Closing hides: the page and the Host keep running, and the next show resumes the same document.
+     window.on('close', (event) => {
+       if (quitting || shellInstallerOwnsQuit || sessionEnding) return
+@@ -1485,7 +1465,7 @@ async function main(): Promise<void> {
+     window.focus()
+   }
+ 
+-  if (app.isPackaged || process.env.DSH_DESKTOP_DEV_APP === '1') app.setAsDefaultProtocolClient('dsh')
++  // The online edition owns the dsh: protocol.
+   app.on('open-url', (event, url) => {
+     event.preventDefault()
+     if (url === 'dsh://open' || url === 'dsh://open/') focusPrimaryWindow()
+@@ -1547,11 +1527,8 @@ async function main(): Promise<void> {
+ 
+   mainWindow = createMainWindow()
+   if (typeof manifest !== 'object' || manifest === null) throw new Error('desktop policy: invalid application manifest')
+-  const developmentPolicy = app.isPackaged ? undefined : process.env.DSH_DESKTOP_MANDATORY_UPDATE_CONFIG
+-  const policyInput: unknown = app.isPackaged
+-    ? ('dshMandatoryUpdatePolicy' in manifest ? manifest.dshMandatoryUpdatePolicy : undefined)
+-    : developmentPolicy === undefined ? undefined : JSON.parse(developmentPolicy) as unknown
+-  const policyConfig = resolveDesktopPolicyConfig(policyInput, !app.isPackaged)
++  // This private distribution has no remote policy feed.
++  const policyConfig = resolveDesktopPolicyConfig(undefined, false)
+   if (policyConfig !== undefined) {
+     if (policyConfig.authentication === 'feishu-test') {
+       policyAuth = new DesktopPolicyTestAuth(policyConfig.origin, policyConfig.allowedAuthOrigins, locale,
+@@ -1590,7 +1567,6 @@ async function main(): Promise<void> {
+       if (app.isPackaged && state.error === 'authentication-required' && !isQuitting()) queuePolicyAuthentication()
+     }).catch((error: unknown) => { console.error(error) })
+   }
+-  automaticCheck()
+   await reconcileBackend().catch(() => undefined)
+   // Window lifecycle callbacks run while backend startup is pending.
+   if (isQuitting()) return
+diff --git a/apps/desktop/src/platform-view.ts b/apps/desktop/src/platform-view.ts
+index 7cc85e8c..6d052ec3 100644
+--- a/apps/desktop/src/platform-view.ts
++++ b/apps/desktop/src/platform-view.ts
+@@ -1,7 +1,7 @@
+ /** Isolated Platform documents owned by the desktop account lifetime. */
+ import type { EventEmitter } from 'node:events'
+ import { createHash, randomUUID } from 'node:crypto'
+-import { WebContentsView, session, shell, type Session, type View, type WebFrameMain } from 'electron'
++import { WebContentsView, session, type Session, type View, type WebFrameMain } from 'electron'
+ import type { PlatformSession } from '@deepseek-ai/dsh-deepseek-account'
+ import { mergePlatformCookies, platformClientHeaders } from '@deepseek-ai/dsh-deepseek-account/client-metadata'
+ import { desktopClientMetadata } from './client-metadata.ts'
+@@ -146,16 +146,8 @@ export class DesktopPlatformView {
+       nodeIntegration: false, webSecurity: true,
+     } })
+     this.view = view
+-    // External payment and documentation pages open without the embedded session or token.
+-    view.webContents.setWindowOpenHandler(({ url }) => {
+-      const destination = new URL(url)
+-      if (destination.protocol === 'https:' && !destination.username && !destination.password) {
+-        void shell.openExternal(url).catch(() => {
+-          // An OS browser-launch failure leaves the embedded page available for retry.
+-        })
+-      }
+-      return { action: 'deny' }
+-    })
++    // Keep external links inside the local edition’s network boundary.
++    view.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
+     const allowNavigation = (url: string): boolean => {
+       try {
+         const parsed = new URL(url)
+diff --git a/apps/desktop/src/update-coordinator.ts b/apps/desktop/src/update-coordinator.ts
+index 475a5606..de98b81c 100644
+--- a/apps/desktop/src/update-coordinator.ts
++++ b/apps/desktop/src/update-coordinator.ts
+@@ -1,7 +1,5 @@
+ /** User-authorized downloads and separate installation of one version-bound Desktop release. */
+ 
+-import { existsSync } from 'node:fs'
+-import { join } from 'node:path'
+ import { app } from 'electron'
+ import electronUpdater, { type AppUpdater, type ProgressInfo, type UpdateInfo, type UpdateCheckResult } from 'electron-updater'
+ import { gt, valid } from 'semver'
+@@ -61,7 +59,7 @@ export class DesktopUpdateCoordinator {
+     private readonly publish: (state: DesktopUpdateState) => DesktopUpdateState,
+     private readonly beforeRestart: () => Promise<boolean>,
+     private readonly updater: AppUpdater = autoUpdater,
+-    private readonly enabled: () => boolean = () => app.isPackaged && existsSync(join(process.resourcesPath, 'app-update.yml')),
++    private readonly enabled: () => boolean = () => false,
+     private readonly currentVersion: () => string = () => app.getVersion(),
+     private readonly downloadResult?: (success: boolean, reason?: string) => void,
+     private channel: DesktopUpdateChannel = 'nightly',
+diff --git a/packages/bundle/base/cordis.patch.yml b/packages/bundle/base/cordis.patch.yml
+index f455fe70..67ba5e3a 100644
+--- a/packages/bundle/base/cordis.patch.yml
++++ b/packages/bundle/base/cordis.patch.yml
+@@ -90,8 +90,8 @@
+     - id: agent-default-model
+       name: '@deepseek-ai/dsh-agent-default-model'
+       config:
+-        provider: deepseek-official
+-        model: deepseek-flash
++        provider: omlx-local
++        model: qwen/qwen3.8-27b
+ 
+     - id: jobs
+       name: '@deepseek-ai/dsh-jobs-local'
+@@ -134,6 +134,16 @@
+     # document.
+     - id: llm-pi-ai
+       name: '@deepseek-ai/dsh-llm-pi-ai'
++      config:
++        providers:
++          omlx-local:
++            displayName: oMLX (Local)
++            api: openai-completions
++            apiKeyEnv: DSH_LOCAL_MODEL_KEY
++            baseURL: http://127.0.0.1:8000/v1
++            models:
++              - id: qwen/qwen3.8-27b
++                name: Qwen 3.8 27B (oMLX Local)
+ 
+     - id: session-persistence-jsonl
+       name: '@deepseek-ai/dsh-session-persistence-jsonl'
+@@ -217,6 +227,7 @@
+     # Every CLI exit path drains by disposing the root on SIGINT/SIGTERM.
+     - id: session-telemetry-otel
+       name: '@deepseek-ai/dsh-session-telemetry-otel'
++      disabled: true
+       config:
+         mode: !!js process.env.DSH_TELEMETRY_MODE || 'FEEDBACK_ONLY'
+         shutdownTimeoutMillis: 3000
+@@ -323,6 +334,7 @@
+ 
+     - id: command-feedback
+       name: '@deepseek-ai/dsh-command-feedback'
++      disabled: true
+ 
+     - id: goal
+       name: '@deepseek-ai/dsh-goal'
+@@ -492,6 +504,7 @@
+ 
+     - id: web-search-deepseek
+       name: '@deepseek-ai/dsh-web-search-deepseek'
++      disabled: true
+       config:
+         apiKeyEnv: DEEPSEEK_API_KEY
+ 
+@@ -500,9 +513,11 @@
+ 
+     - id: web-fetch-http
+       name: '@deepseek-ai/dsh-web-fetch-http'
++      disabled: true
+ 
+     - id: tool-web
+       name: '@deepseek-ai/dsh-tool-web'
++      disabled: true
+       config:
+         fetch: true
+         searchTimeoutMs: 60000
+@@ -548,6 +563,8 @@
+     # choice.
+     - id: llm-deepseek
+       name: '@deepseek-ai/dsh-llm-deepseek-api-key'
++      disabled: true
+ 
+     - id: llm-deepseek-account
+       name: '@deepseek-ai/dsh-llm-deepseek-account'
++      disabled: true
+diff --git a/packages/bundle/web-app/cordis.patch.yml b/packages/bundle/web-app/cordis.patch.yml
+index e842d8e3..ec564af4 100644
+--- a/packages/bundle/web-app/cordis.patch.yml
++++ b/packages/bundle/web-app/cordis.patch.yml
+@@ -36,7 +36,7 @@
+ - insert:
+     - id: desktop-product-telemetry
+       name: '@deepseek-ai/dsh-host-product-telemetry-otel'
+-      disabled: !!js "ctx.get('profileContext')?.name !== 'desktop'"
++      disabled: true
+       config:
+         scheduledDelayMillis: 30000
+         timeoutMillis: 15000
+@@ -48,7 +48,7 @@
+ 
+     - id: product-analytics
+       name: '@deepseek-ai/dsh-client-product-analytics'
+-      disabled: !!js "ctx.get('profileContext')?.name !== 'desktop'"
++      disabled: true
+       config:
+         enabled: true
+         appVersion: !!js process.env.DSH_CLIENT_VERSION
+@@ -60,6 +60,7 @@
+ 
+     - id: message-feedback
+       name: '@deepseek-ai/dsh-message-feedback'
++      disabled: true
+       config:
+         maxNoteBytes: 8192
+ 
+@@ -157,6 +158,8 @@
+     # Workspace commands and reconnect-safe projection over Typert Remote.
+     - id: workspace-controller
+       name: '@deepseek-ai/dsh-api-workspace-controller'
++      config:
++        documentsDirectory: !!js process.env.DSH_LOCAL_WORKSPACES
+ 
+     - id: cordis-host-runner
+       name: '@deepseek-ai/dsh-cordis-host-runner'
+@@ -260,6 +263,8 @@
+ 
+     - id: locale
+       name: '@deepseek-ai/dsh-client-locale'
++      config:
++        preference: en
+ 
+     - id: shortcuts
+       name: '@deepseek-ai/dsh-client-shortcuts'
+@@ -318,7 +323,7 @@
+     # Web profiles opt in; Desktop retains sandboxed HTTP(S) Browser tabs.
+     - id: ui-sidebar-browser
+       name: '@deepseek-ai/dsh-client-ui-sidebar-browser'
+-      disabled: !!js "ctx.get('profileContext')?.name !== 'desktop'"
++      disabled: true
+ 
+     - id: ui-sidebar-terminal
+       name: '@deepseek-ai/dsh-client-ui-sidebar-terminal'
+@@ -442,6 +447,7 @@
+     # acknowledgement toast, over the messageFeedback and sessionFeedback Remotes.
+     - id: ui-message-feedback
+       name: '@deepseek-ai/dsh-client-ui-message-feedback'
++      disabled: true
+ 
+     # Model selection: the /model popupSelect + composer seat over session.models.
+     - id: ui-model-selection
+@@ -483,6 +489,7 @@
+ 
+     - id: ui-settings-web-search
+       name: '@deepseek-ai/dsh-client-ui-settings-web-search'
++      disabled: true
+ 
+     # Plan control: the composer plan seat over the plan projection + /plan channel.
+     - id: ui-plan
+diff --git a/tsconfig.client.json b/tsconfig.client.json
+index f5159615..8e21ee0d 100644
+--- a/tsconfig.client.json
++++ b/tsconfig.client.json
+@@ -19,6 +19,7 @@
+     "apps/desktop/src/keyboard.ts",
+     "apps/desktop/src/keybindings.ts",
+     "apps/desktop/src/browser-guests.ts",
++    "apps/desktop/src/local-privacy.ts",
+     "apps/desktop/src/ipc.ts",
+     "apps/desktop/src/update-overlay.ts",
+     "apps/desktop/src/windows-layout.ts",

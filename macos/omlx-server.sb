@@ -1,0 +1,9 @@
+(version 1)
+(allow default)
+; Serve the local Mac and allow the admin benchmark to call its own API.
+(deny network-outbound (remote ip "*:*"))
+(allow network-outbound (remote tcp "localhost:8000"))
+(deny network-bind (local ip "*:*"))
+(allow network-bind (local ip "localhost:*"))
+(deny mach-lookup (global-name "com.apple.mDNSResponder"))
+(deny appleevent-send)
